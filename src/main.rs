@@ -6,6 +6,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+mod tui;
+
 /// Archive/combine PDF pages into a new PDF file.
 #[derive(Parser, Debug)]
 #[command(
@@ -15,17 +17,45 @@ use std::path::PathBuf;
 )]
 struct Cli {
     /// Input specifications in the form `file.pdf` or `file.pdf:1,3-5,7`.
+    /// Use `z` (or `last`/`end`) for the last page, e.g. `file.pdf:10-z`.
+    /// Open ranges are also accepted: `file.pdf:10-` (to the end) and `file.pdf:-3`.
     /// Repeating an input or page keeps it again (order is preserved).
-    #[arg(value_name = "INPUT[:PAGES]", required = true)]
+    /// Omit to launch the interactive TUI.
+    #[arg(value_name = "INPUT[:PAGES]")]
     inputs: Vec<String>,
 
-    /// Output PDF path.
+    /// Force interactive TUI mode.
+    #[arg(long = "tui")]
+    tui: bool,
+
+    /// Output PDF path (CLI mode). Defaults to output.pdf when omitted.
     #[arg(short, long, value_name = "OUTPUT")]
-    output: PathBuf,
+    output: Option<PathBuf>,
 
     /// Overwrite the output file without prompting.
     #[arg(short = 'y', long = "yes")]
     force: bool,
+}
+
+fn parse_page_token(token: &str, total: u32) -> Result<u32> {
+    let token = token.trim();
+    // `z` (and a few common aliases) stands for the last page of the document.
+    if matches!(
+        token.to_ascii_lowercase().as_str(),
+        "z" | "last" | "end" | "$"
+    ) {
+        return Ok(total);
+    }
+    let page: u32 = token
+        .parse()
+        .with_context(|| format!("invalid page number: {token:?}"))?;
+    if page == 0 {
+        bail!("page numbers are 1-based, got 0");
+    }
+    if page > total {
+        bail!("page out of range: requested {page}, document has {total} pages");
+    }
+    Ok(page)
 }
 
 fn parse_pages(spec: &str, total: u32) -> Result<Vec<u32>> {
@@ -36,14 +66,17 @@ fn parse_pages(spec: &str, total: u32) -> Result<Vec<u32>> {
             continue;
         }
         if let Some((start, end)) = part.split_once('-') {
-            let start: u32 = start
-                .trim()
-                .parse()
-                .with_context(|| format!("invalid page number: {start:?}"))?;
-            let end: u32 = end
-                .trim()
-                .parse()
-                .with_context(|| format!("invalid page number: {end:?}"))?;
+            // Allow open-ended ranges such as "10-" (to the end) or "-3" (from the start).
+            let start: u32 = if start.trim().is_empty() {
+                1
+            } else {
+                parse_page_token(start, total)?
+            };
+            let end: u32 = if end.trim().is_empty() {
+                total
+            } else {
+                parse_page_token(end, total)?
+            };
             if start == 0 || end == 0 {
                 bail!("page numbers are 1-based, got 0");
             }
@@ -59,9 +92,7 @@ fn parse_pages(spec: &str, total: u32) -> Result<Vec<u32>> {
                 result.push(page);
             }
         } else {
-            let page: u32 = part
-                .parse()
-                .with_context(|| format!("invalid page number: {part:?}"))?;
+            let page = parse_page_token(part, total)?;
             if page == 0 {
                 bail!("page numbers are 1-based, got 0");
             }
@@ -212,10 +243,21 @@ fn copy_object(
 }
 
 fn main() -> Result<()> {
-    run(Cli::parse())
+    let mut cli = Cli::parse();
+    if cli.tui || cli.inputs.is_empty() {
+        return tui::run_tui();
+    }
+    if cli.output.is_none() {
+        cli.output = Some(PathBuf::from("output.pdf"));
+    }
+    run(cli)
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let output = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("output.pdf"));
     // First pass: validate inputs and page ranges.
     let mut resolved: Vec<(PathBuf, Option<Vec<u32>>)> = Vec::new();
     let mut raw_inputs: Vec<(PathBuf, Option<String>)> = Vec::with_capacity(cli.inputs.len());
@@ -235,10 +277,10 @@ fn run(cli: Cli) -> Result<()> {
         resolved.push((path.clone(), pages));
     }
 
-    if cli.output.exists() && !cli.force {
+    if output.exists() && !cli.force {
         print!(
             "Output file {} already exists. Overwrite? [y/N] ",
-            cli.output.display()
+            output.display()
         );
         io::stdout().flush().ok();
         let mut answer = String::new();
@@ -351,15 +393,15 @@ fn run(cli: Cli) -> Result<()> {
         pages_dict.set("Count", Object::Integer(kids.len() as i64));
     }
 
-    if let Some(parent) = cli.output.parent()
+    if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent).ok();
     }
-    doc.save(&cli.output)
-        .with_context(|| format!("failed to save output: {}", cli.output.display()))?;
+    doc.save(&output)
+        .with_context(|| format!("failed to save output: {}", output.display()))?;
 
-    println!("Wrote {}", cli.output.display());
+    println!("Wrote {}", output.display());
     Ok(())
 }
 
@@ -423,8 +465,9 @@ mod tests {
                 format!("{}:2-3", a.display()),
                 format!("{}:1,2", b.display()),
             ],
-            output: out.clone(),
+            output: Some(out.clone()),
             force: true,
+            tui: false,
         };
         run(cli).unwrap();
         assert!(out.exists());
@@ -440,6 +483,20 @@ mod tests {
     #[test]
     fn parse_pages_reversed_range() {
         assert_eq!(parse_pages("5-3", 10).unwrap(), vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn parse_pages_last_symbol() {
+        assert_eq!(
+            parse_pages("10-z", 12).unwrap(),
+            (10..=12).collect::<Vec<_>>()
+        );
+        assert_eq!(parse_pages("z", 5).unwrap(), vec![5]);
+        assert_eq!(parse_pages("5-z", 5).unwrap(), vec![5]);
+        assert_eq!(
+            parse_pages("10-", 12).unwrap(),
+            (10..=12).collect::<Vec<_>>()
+        );
     }
 
     #[test]
