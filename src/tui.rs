@@ -5,7 +5,7 @@ use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::path::{Path, PathBuf};
@@ -423,7 +423,10 @@ fn render(frame: &mut Frame, app: &mut App) {
             } else {
                 e.selector.clone()
             };
-            ListItem::new(Line::from(format!("{}  [{}] ", e.path.display(), sel)))
+            ListItem::new(Text::from(vec![
+                Line::from(e.path.display().to_string()),
+                Line::from(format!("  -> pages : {sel}")),
+            ]))
         })
         .collect();
     let entries_list = List::new(entry_items)
