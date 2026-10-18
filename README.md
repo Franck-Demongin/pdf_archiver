@@ -99,6 +99,12 @@ Raccourcis principaux :
 - `r` : générer le PDF ;
 - `q` : quitter.
 
+Exemples d’interface :
+
+![TUI - interface principale](docs/tui-main.png)
+
+![TUI - édition de la sélection de pages](docs/tui-edit.png)
+
 ## Tests
 
 ```bash
