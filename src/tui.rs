@@ -349,7 +349,8 @@ fn execute_run(app: &mut App) {
     let cli = Cli {
         inputs: specs,
         output: Some(PathBuf::from(&app.output)),
-        force: app.force,
+        // La TUI a déjà géré la confirmation d'écrasement.
+        force: true,
         tui: false,
     };
     match run(cli) {
