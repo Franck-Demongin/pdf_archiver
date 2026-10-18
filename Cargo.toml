@@ -1,0 +1,12 @@
+[package]
+name = "pdf_archiver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+lopdf = "0.34"
+
+[dev-dependencies]
+tempfile = "3"
